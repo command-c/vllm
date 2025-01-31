@@ -179,11 +179,20 @@ class GroupCoordinator:
         self.cpu_group = None
 
         for ranks in group_ranks:
+            device_backend = torch_distributed_backend
+            logger.info(f"__ME using device_group backend: {device_backend}")
             device_group = torch.distributed.new_group(
-                ranks, backend=torch_distributed_backend)
+                ranks, backend=device_backend)
+                # ranks, backend=torch_distributed_backend)
             # a group with `gloo` backend, to allow direct coordination between
             # processes through the CPU.
-            cpu_group = torch.distributed.new_group(ranks, backend="gloo")
+            # TODO changed cpu_group to MPI
+            cpu_backend = 'cpu:mpi,cuda:mpi'
+            # cpu_group = torch.distributed.new_group(ranks, backend="gloo")
+            cpu_group = torch.distributed.new_group(ranks, backend=cpu_backend)
+            logger.info(f"__ME  using cpu_group backend: {cpu_backend}")
+
+            
             if self.rank in ranks:
                 self.ranks = ranks
                 self.world_size = len(ranks)
@@ -355,9 +364,11 @@ class GroupCoordinator:
         return torch.ops.vllm.all_reduce(input_, group_name=self.unique_name)
 
     def _all_reduce_out_place(self, input_: torch.Tensor) -> torch.Tensor:
+        # * here choose the logic to use for allreduce
+        
         # always try custom allreduce first,
         # and then pynccl.
-        ca_comm = self.ca_comm
+        ca_comm = self.ca_comm # * CustomAllreduce()
         if ca_comm is not None and not ca_comm.disabled and \
             ca_comm.should_custom_ar(input_):
             out = ca_comm.custom_all_reduce(input_)

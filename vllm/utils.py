@@ -952,7 +952,9 @@ def find_nccl_library() -> str:
     After importing `torch`, `libnccl.so.2` or `librccl.so.1` can be
     found by `ctypes` automatically.
     """
-    so_file = envs.VLLM_NCCL_SO_PATH
+    # so_file = envs.VLLM_NCCL_SO_PATH
+    # TODO hard code for MRI sys
+    so_file = "/opt/nvidia/hpc_sdk/Linux_x86_64/23.7/REDIST/comm_libs/12.2/nccl/lib/libnccl.so"
 
     # manually load the nccl library
     if so_file:

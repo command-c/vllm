@@ -74,6 +74,7 @@ class CustomAllreduce:
 
         self.group = group
 
+        logger.info(f"__ME  Initial CustomAllreduce for group {group}, using Backend: {dist.get_backend(group)} (should be non-NCCL group)")
         assert dist.get_backend(group) != dist.Backend.NCCL, (
             "CustomAllreduce should be attached to a non-NCCL group.")
 
