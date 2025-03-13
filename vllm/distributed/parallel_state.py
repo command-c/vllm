@@ -21,6 +21,7 @@ If you only need to use the distributed environment without model/pipeline
 """
 import contextlib
 import gc
+import os
 import pickle
 import weakref
 from collections import namedtuple
@@ -178,21 +179,26 @@ class GroupCoordinator:
         self.device_group = None
         self.cpu_group = None
 
+        logger.info(f"__ME group_ranks: {group_ranks}")  # [[0, 1]]
         for ranks in group_ranks:
-            device_backend = torch_distributed_backend
+            # device_backend = torch_distributed_backend
+            device_backend = 'nccl'
             logger.info(f"__ME using device_group backend: {device_backend}")
             device_group = torch.distributed.new_group(
                 ranks, backend=device_backend)
-                # ranks, backend=torch_distributed_backend)
+            # ranks, backend=torch_distributed_backend)
             # a group with `gloo` backend, to allow direct coordination between
             # processes through the CPU.
             # TODO changed cpu_group to MPI
-            cpu_backend = 'cpu:mpi,cuda:mpi'
+            # cpu_backend = 'cpu:mpi,cuda:mpi'
+            cpu_backend = 'gloo'
             # cpu_group = torch.distributed.new_group(ranks, backend="gloo")
-            cpu_group = torch.distributed.new_group(ranks, backend=cpu_backend)
-            logger.info(f"__ME  using cpu_group backend: {cpu_backend}")
+            # cpu_group = torch.distributed.new_group(ranks, backend=cpu_backend)
+            cpu_group = torch.distributed.new_group(
+                ranks, backend=cpu_backend)  # TODO
+            logger.info(
+                f"__ME  using cpu_group backend: {cpu_backend}, group size: {torch.distributed.get_world_size(cpu_group)}")
 
-            
             if self.rank in ranks:
                 self.ranks = ranks
                 self.world_size = len(ranks)
@@ -349,12 +355,12 @@ class GroupCoordinator:
             return input_
 
         if self.tpu_communicator is not None and \
-            not self.tpu_communicator.disabled:
+                not self.tpu_communicator.disabled:
             # TPU handles Dynamo with its own logic.
             return self.tpu_communicator.all_reduce(input_)
 
         if self.hpu_communicator is not None and \
-            not self.hpu_communicator.disabled:
+                not self.hpu_communicator.disabled:
             return self.hpu_communicator.all_reduce(input_)
 
         if self.xpu_communicator is not None and \
@@ -365,28 +371,34 @@ class GroupCoordinator:
 
     def _all_reduce_out_place(self, input_: torch.Tensor) -> torch.Tensor:
         # * here choose the logic to use for allreduce
-        
+
         # always try custom allreduce first,
         # and then pynccl.
-        ca_comm = self.ca_comm # * CustomAllreduce()
-        if ca_comm is not None and not ca_comm.disabled and \
-            ca_comm.should_custom_ar(input_):
-            out = ca_comm.custom_all_reduce(input_)
-            assert out is not None
-            return out
+        # ! Custom kernel
+        # ca_comm = self.ca_comm  # * CustomAllreduce()
+        # if ca_comm is not None and not ca_comm.disabled and \
+        #         ca_comm.should_custom_ar(input_):
+        #     out = ca_comm.custom_all_reduce(input_)
+        #     assert out is not None
+        #     return out
+        
+        # ! Using pynccl allreduce
         pynccl_comm = self.pynccl_comm
         assert pynccl_comm is not None
         # TODO: pynccl should not use `stream=`
         # it can just always use the current stream.
         out = pynccl_comm.all_reduce(input_,
                                      stream=torch.cuda.current_stream())
-        if out is None:
+        
+        # ! Using pytorch allreduce
+        # if out is None:
             # fall back to the default all-reduce using PyTorch.
             # this usually happens during testing.
             # when we run the model, allreduce only happens for the TP
             # group, where we always have either custom allreduce or pynccl.
-            out = input_.clone()
-            torch.distributed.all_reduce(out, group=self.device_group)
+        # out = input_.clone()
+        # torch.distributed.all_reduce(out, group=self.device_group)
+        
         return out
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
@@ -967,10 +979,29 @@ def init_distributed_environment(
     local_rank: int = -1,
     backend: str = "nccl",
 ):
-    logger.debug(
-        "world_size=%d rank=%d local_rank=%d "
+    # TODO
+    os.environ['MASTER_ADDR'] = "10.1.1.25"  # a100-05
+    os.environ['MASTER_PORT'] = str(29500)
+
+    os.environ['PMI_HOSTNAME'] = 'a100-05'
+    os.environ['MPI_LOCALNRANKS'] = str(2)
+    os.environ['MPI_LOCALRANKID'] = str(local_rank)
+    # os.environ['PMI_FD'] = '5'
+
+    os.environ["PMI_SIZE"] = str(world_size)
+    os.environ["PMI_RANK"] = str(rank)
+
+    os.environ['RANK'] = os.environ['PMI_RANK']
+    os.environ['WORLD_SIZE'] = os.environ['PMI_SIZE']
+    os.environ['LOCAL_RANK'] = str(local_rank)
+    # backend = 'cpu:mpi,cuda:mpi'
+    backend = 'nccl' #TODO
+
+    logger.info(
+        "__ME world_size=%d rank=%d local_rank=%d "
         "distributed_init_method=%s backend=%s", world_size, rank, local_rank,
         distributed_init_method, backend)
+    # world_size=2 rank=0 local_rank=0 distributed_init_method=tcp://127.0.0.1:58335 backend=nccl
     if not torch.distributed.is_initialized():
         assert distributed_init_method is not None, (
             "distributed_init_method must be provided when initializing "
@@ -981,6 +1012,8 @@ def init_distributed_environment(
             init_method=distributed_init_method,
             world_size=world_size,
             rank=rank)
+        logger.info(
+            f"__ME Initialized distributed environment, with world_size {torch.distributed.get_world_size()}")
     # set the local rank
     # local_rank is not available in torch ProcessGroup,
     # see https://github.com/pytorch/pytorch/issues/122816
@@ -993,8 +1026,10 @@ def init_distributed_environment(
             local_rank = rank
     global _WORLD
     if _WORLD is None:
+        logger.info("__ME Initializing world group")
         ranks = list(range(torch.distributed.get_world_size()))
         _WORLD = init_world_group(ranks, local_rank, backend)
+        logger.info("__ME Initialized world group")
     else:
         assert _WORLD.world_size == torch.distributed.get_world_size(), (
             "world group already initialized with a different world size")
