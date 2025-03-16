@@ -151,7 +151,7 @@ class ProcessWorkerWrapper:
     def __init__(self, result_handler: ResultHandler,
                  worker_factory: Callable[[], Any]) -> None:
         self.mp = get_mp_context()
-        self._task_queue = self.mp.Queue()
+        self._task_queue = self.mp.Queue() #TODO ME replace this queue
         self.result_queue = result_handler.result_queue
         self.tasks = result_handler.tasks
         self.process: BaseProcess = self.mp.Process(  # type: ignore[attr-defined]

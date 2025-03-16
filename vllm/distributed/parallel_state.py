@@ -980,20 +980,20 @@ def init_distributed_environment(
     backend: str = "nccl",
 ):
     # TODO
-    os.environ['MASTER_ADDR'] = "10.1.1.25"  # a100-05
-    os.environ['MASTER_PORT'] = str(29500)
+    # os.environ['MASTER_ADDR'] = "10.1.1.25"  # a100-05
+    # os.environ['MASTER_PORT'] = str(29500)
 
-    os.environ['PMI_HOSTNAME'] = 'a100-05'
-    os.environ['MPI_LOCALNRANKS'] = str(2)
-    os.environ['MPI_LOCALRANKID'] = str(local_rank)
-    # os.environ['PMI_FD'] = '5'
+    # os.environ['PMI_HOSTNAME'] = 'a100-05'
+    # os.environ['MPI_LOCALNRANKS'] = str(2)
+    # os.environ['MPI_LOCALRANKID'] = str(local_rank)
+    # # os.environ['PMI_FD'] = '5'
 
-    os.environ["PMI_SIZE"] = str(world_size)
-    os.environ["PMI_RANK"] = str(rank)
+    # os.environ["PMI_SIZE"] = str(world_size)
+    # os.environ["PMI_RANK"] = str(rank)
 
-    os.environ['RANK'] = os.environ['PMI_RANK']
-    os.environ['WORLD_SIZE'] = os.environ['PMI_SIZE']
-    os.environ['LOCAL_RANK'] = str(local_rank)
+    # os.environ['RANK'] = os.environ['PMI_RANK']
+    # os.environ['WORLD_SIZE'] = os.environ['PMI_SIZE']
+    # os.environ['LOCAL_RANK'] = str(local_rank)
     # backend = 'cpu:mpi,cuda:mpi'
     backend = 'nccl' #TODO
 

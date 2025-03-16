@@ -447,6 +447,10 @@ class WorkerWrapperBase:
         from vllm.plugins import load_general_plugins
         load_general_plugins()
 
+        # TODO
+        # print(f"ME: vllm/worker/worker_base.py initializing this worker: {self.vllm_config.parallel_config.worker_cls}")
+        # vllm.worker.worker.Worker
+        
         worker_class = resolve_obj_by_qualname(
             self.vllm_config.parallel_config.worker_cls)
         self.worker = worker_class(*args, **kwargs)
