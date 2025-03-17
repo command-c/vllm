@@ -512,6 +512,11 @@ class LLMEngine:
                 "multiprocessing distributed executor backend does not "
                 "support VLLM_USE_RAY_SPMD_WORKER=1")
             executor_class = MultiprocessingGPUExecutor
+        # TODO ME
+        elif distributed_executor_backend == "mpi":
+            from vllm.executor.mpi_gpu_executor import (
+                MPIGPUExecutor)
+            executor_class = MPIGPUExecutor
         else:
             from vllm.executor.gpu_executor import GPUExecutor
             executor_class = GPUExecutor
@@ -1402,6 +1407,11 @@ class LLMEngine:
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
 
+            # # TODO ME observe model req
+            # print(f"TODO ME observe model req, {execute_model_req}")
+            # Sample out: ME observe model req, ExecuteModelRequest(seq_group_metadata_list=[SequenceGroupMetadata(request_id='0', is_prompt=True, seq_data={0: SequenceData(prompt_token_ids=array('l', [4340, 525, 498, 30]), output_token_ids=(), cumulative_logprob=0.0, get_num_computed_tokens=0}, sampling_params=SamplingParams(n=1, presence_penalty=0.0, frequency_penalty=0.0, repetition_penalty=1.0, temperature=1.0, top_p=1.0, top_k=-1, min_p=0.0, seed=None, stop=[], stop_token_ids=[], bad_words=[], include_stop_str_in_output=False, ignore_eos=False, max_tokens=16, min_tokens=0, logprobs=None, prompt_logprobs=None, skip_special_tokens=True, spaces_between_special_tokens=True, truncate_prompt_tokens=None, guided_decoding=None), block_tables={0: [0]}, do_sample=True, pooling_params=None, lora_request=None, computed_block_nums=[], state=SequenceGroupState(num_steps=1, current_step=0), token_type_ids=[], multi_modal_data={}, multi_modal_placeholders={}, mm_processor_kwargs={}, encoder_seq_data=None, cross_block_table=None, prompt_adapter_request=None, token_chunk_size=4, num_speculative_tokens=None)], blocks_to_swap_in=[], blocks_to_swap_out=[], blocks_to_copy=[], virtual_engine=0, num_lookahead_slots=0, running_queue_size=1, previous_hidden_states=None, num_steps=1, finished_requests_ids=[], last_sampled_token_ids=None, async_callback=functools.partial(<function weak_bind.<locals>.weak_bound at 0x147ed90c2b60>, ctx=<vllm.engine.llm_engine.SchedulerContext object at 0x147da40c8260>))
+            # print(f"TODO ME: executor type: {type(self.model_executor)}")
+            # executor type: <class 'vllm.executor.multiproc_gpu_executor.MultiprocessingGPUExecutor'>
             outputs = self.model_executor.execute_model(
                 execute_model_req=execute_model_req)
 

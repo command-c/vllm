@@ -1129,8 +1129,9 @@ class ParallelConfig:
         # Lazy import to avoid circular import
         from vllm.executor.executor_base import ExecutorBase
 
+        # TODO add mpi
         if self.distributed_executor_backend not in (
-                "ray", "mp", None) and not (isinstance(
+                "ray", "mp", "mpi", None) and not (isinstance(
                     self.distributed_executor_backend, type) and issubclass(
                         self.distributed_executor_backend, ExecutorBase)):
             raise ValueError(

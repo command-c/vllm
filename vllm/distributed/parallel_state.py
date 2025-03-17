@@ -179,19 +179,26 @@ class GroupCoordinator:
         self.device_group = None
         self.cpu_group = None
 
-        logger.info(f"__ME group_ranks: {group_ranks}")  # [[0, 1]]
+        logger.info(f"__ME group_ranks: {group_ranks}, pid= {os.getpid()}")  # [[0, 1]]
+        #TODO  [[0], [1]] group for PP wrong?
+        # import traceback
+        # traceback.print_stack()
+        
         for ranks in group_ranks:
             # device_backend = torch_distributed_backend
-            device_backend = 'nccl'
-            logger.info(f"__ME using device_group backend: {device_backend}")
+            # device_backend = 'nccl'
+            device_backend = 'cpu:mpi,cuda:mpi'
+            logger.info(f"__ME using device_group backend: {device_backend}, ranks: {ranks}")
             device_group = torch.distributed.new_group(
                 ranks, backend=device_backend)
             # ranks, backend=torch_distributed_backend)
             # a group with `gloo` backend, to allow direct coordination between
             # processes through the CPU.
             # TODO changed cpu_group to MPI
-            # cpu_backend = 'cpu:mpi,cuda:mpi'
-            cpu_backend = 'gloo'
+            cpu_backend = 'cpu:mpi,cuda:mpi'
+            use_custom_allreduce = False
+            use_pynccl = False
+            # cpu_backend = 'gloo'
             # cpu_group = torch.distributed.new_group(ranks, backend="gloo")
             # cpu_group = torch.distributed.new_group(ranks, backend=cpu_backend)
             cpu_group = torch.distributed.new_group(
@@ -366,7 +373,6 @@ class GroupCoordinator:
         if self.xpu_communicator is not None and \
                 not self.xpu_communicator.disabled:
             return self.xpu_communicator.all_reduce(input_)
-
         return torch.ops.vllm.all_reduce(input_, group_name=self.unique_name)
 
     def _all_reduce_out_place(self, input_: torch.Tensor) -> torch.Tensor:
@@ -383,22 +389,23 @@ class GroupCoordinator:
         #     return out
         
         # ! Using pynccl allreduce
-        pynccl_comm = self.pynccl_comm
-        assert pynccl_comm is not None
+        # pynccl_comm = self.pynccl_comm
+        # assert pynccl_comm is not None
         # TODO: pynccl should not use `stream=`
         # it can just always use the current stream.
-        out = pynccl_comm.all_reduce(input_,
-                                     stream=torch.cuda.current_stream())
+        # out = pynccl_comm.all_reduce(input_,
+                                    #  stream=torch.cuda.current_stream())
         
         # ! Using pytorch allreduce
         # if out is None:
-            # fall back to the default all-reduce using PyTorch.
-            # this usually happens during testing.
-            # when we run the model, allreduce only happens for the TP
-            # group, where we always have either custom allreduce or pynccl.
-        # out = input_.clone()
-        # torch.distributed.all_reduce(out, group=self.device_group)
-        
+        #     fall back to the default all-reduce using PyTorch.
+        #     this usually happens during testing.
+        #     when we run the model, allreduce only happens for the TP
+        #     group, where we always have either custom allreduce or pynccl.
+        out = input_.clone()
+        # logger.info(f"__ME Using device: {out.device}")
+        torch.distributed.all_reduce(out, group=self.device_group)
+        # torch.distributed.all_reduce(out)
         return out
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
@@ -979,23 +986,9 @@ def init_distributed_environment(
     local_rank: int = -1,
     backend: str = "nccl",
 ):
-    # TODO
-    # os.environ['MASTER_ADDR'] = "10.1.1.25"  # a100-05
-    # os.environ['MASTER_PORT'] = str(29500)
 
-    # os.environ['PMI_HOSTNAME'] = 'a100-05'
-    # os.environ['MPI_LOCALNRANKS'] = str(2)
-    # os.environ['MPI_LOCALRANKID'] = str(local_rank)
-    # # os.environ['PMI_FD'] = '5'
-
-    # os.environ["PMI_SIZE"] = str(world_size)
-    # os.environ["PMI_RANK"] = str(rank)
-
-    # os.environ['RANK'] = os.environ['PMI_RANK']
-    # os.environ['WORLD_SIZE'] = os.environ['PMI_SIZE']
-    # os.environ['LOCAL_RANK'] = str(local_rank)
-    # backend = 'cpu:mpi,cuda:mpi'
-    backend = 'nccl' #TODO
+    backend = 'cpu:mpi,cuda:mpi'
+    # backend = 'nccl' #TODO
 
     logger.info(
         "__ME world_size=%d rank=%d local_rank=%d "
@@ -1003,15 +996,18 @@ def init_distributed_environment(
         distributed_init_method, backend)
     # world_size=2 rank=0 local_rank=0 distributed_init_method=tcp://127.0.0.1:58335 backend=nccl
     if not torch.distributed.is_initialized():
-        assert distributed_init_method is not None, (
-            "distributed_init_method must be provided when initializing "
-            "distributed environment")
-        # this backend is used for WORLD
-        torch.distributed.init_process_group(
-            backend=backend,
-            init_method=distributed_init_method,
-            world_size=world_size,
-            rank=rank)
+        # assert distributed_init_method is not None, (
+        #     "distributed_init_method must be provided when initializing "
+        #     "distributed environment")
+        # # this backend is used for WORLD
+        # torch.distributed.init_process_group(
+        #     backend=backend,
+        #     init_method=distributed_init_method,
+        #     world_size=world_size,
+        #     rank=rank)
+        
+        torch.distributed.init_process_group(backend='cpu:mpi,cuda:mpi')
+        
         logger.info(
             f"__ME Initialized distributed environment, with world_size {torch.distributed.get_world_size()}")
     # set the local rank
@@ -1026,13 +1022,14 @@ def init_distributed_environment(
             local_rank = rank
     global _WORLD
     if _WORLD is None:
-        logger.info("__ME Initializing world group")
+        # logger.info("__ME Initializing world group")
         ranks = list(range(torch.distributed.get_world_size()))
         _WORLD = init_world_group(ranks, local_rank, backend)
-        logger.info("__ME Initialized world group")
+        # logger.info("__ME Initialized world group")
     else:
         assert _WORLD.world_size == torch.distributed.get_world_size(), (
             "world group already initialized with a different world size")
+
 
 
 def initialize_model_parallel(

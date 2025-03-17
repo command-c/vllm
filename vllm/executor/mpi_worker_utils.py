@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from multiprocessing import Queue
@@ -12,6 +13,8 @@ from typing import (Any, Callable, Dict, Generic, List, Optional, TextIO,
                     TypeVar, Union)
 
 import torch
+import zmq
+import pickle
 
 import vllm.envs as envs
 from vllm.logger import init_logger
@@ -33,6 +36,7 @@ RESET = '\033[0;0m'
 
 JOIN_TIMEOUT_S = 2
 
+zmqContext = zmq.Context()
 
 @dataclass
 class Result(Generic[T]):
@@ -80,11 +84,15 @@ class ResultHandler(threading.Thread):
 
     def __init__(self) -> None:
         super().__init__(daemon=True)
-        self.result_queue = get_mp_context().Queue()
+        
+        master_addr = os.environ["MASTER_ADDR"]
+        self.ZMQ_URL_Result = f"tcp://{master_addr}:{5200}"
+        self.result_socket = zmqContext.socket(zmq.PULL)
+        self.result_socket.bind(self.ZMQ_URL_Result)
         self.tasks: Dict[uuid.UUID, Union[ResultFuture, asyncio.Future]] = {}
 
     def run(self):
-        for result in iter(self.result_queue.get, _TERMINATE):
+        while(result := self.result_socket.recv_pyobj()) != _TERMINATE:
             future = self.tasks.pop(result.task_id)
             _set_future_result(future, result)
         # Ensure that all waiters will receive an exception
@@ -95,8 +103,11 @@ class ResultHandler(threading.Thread):
                        exception=ChildProcessError("worker died")))
 
     def close(self):
-        self.result_queue.put(_TERMINATE)
-
+        print("Sending terminate to result handler")
+        result_socket_push = zmqContext.socket(zmq.PUSH)
+        result_socket_push.connect(self.ZMQ_URL_Result)
+        result_socket_push.send_pyobj(_TERMINATE)
+        print("Sent terminate to result handler")
 
 class WorkerMonitor(threading.Thread):
     """Monitor worker status (in background thread)"""
@@ -109,29 +120,9 @@ class WorkerMonitor(threading.Thread):
         self._close = False
 
     def run(self) -> None:
-        # Blocks until any worker exits
-        dead_sentinels = wait([w.process.sentinel for w in self.workers])
-        if not self._close:
-            self._close = True
-
-            # Kill / cleanup all workers
-            for worker in self.workers:
-                process = worker.process
-                if process.sentinel in dead_sentinels:
-                    process.join(JOIN_TIMEOUT_S)
-                if process.exitcode is not None and process.exitcode != 0:
-                    logger.error("Worker %s pid %s died, exit code: %s",
-                                 process.name, process.pid, process.exitcode)
-            # Cleanup any remaining workers
-            if logger:
-                logger.info("Killing local vLLM worker processes")
-            for worker in self.workers:
-                worker.kill_worker()
-            # Must be done after worker task queues are all closed
-            self.result_handler.close()
-
-        for worker in self.workers:
-            worker.process.join(JOIN_TIMEOUT_S)
+        while True:
+            # TODO
+            time.sleep(10)
 
     def close(self):
         if self._close:
@@ -148,37 +139,32 @@ class ProcessWorkerWrapper:
     """Local process wrapper for vllm.worker.Worker,
     for handling single-node multi-GPU tensor parallel."""
 
-    def __init__(self, result_handler: ResultHandler,
+    def __init__(self, rank , result_handler: ResultHandler,
                  worker_factory: Callable[[], Any]) -> None:
-        self.mp = get_mp_context()
-        self._task_queue = self.mp.Queue() # TODO ME replace this queue
-        self.result_queue = result_handler.result_queue
-        self.tasks = result_handler.tasks
-        self.process: BaseProcess = self.mp.Process(  # type: ignore[attr-defined]
-            target=_run_worker_process,
-            name="VllmWorkerProcess",
-            kwargs=dict(
-                worker_factory=worker_factory,
-                task_queue=self._task_queue,
-                result_queue=self.result_queue,
-            ),
-            daemon=True)
 
-        self.process.start()
+        # Connect to worker sockets, worker should already running
+        master_addr = os.environ["MASTER_ADDR"]
+        self.rank = rank
+        ZMQ_URL_Task = f"tcp://{master_addr}:{5100 + rank}"
+
+        self.socket_Task = zmqContext.socket(zmq.PUSH)
+        self.socket_Task.bind(ZMQ_URL_Task)
+        print(f"WorkerWrapper {rank} connected to Task Queue {ZMQ_URL_Task}")
+
+        # Passing the worker factory to the worker process
+        self.socket_Task.send_pyobj(worker_factory)
+        print(f"WorkerWrapper {rank} sent worker factory")
+        self.tasks = result_handler.tasks
 
     def _enqueue_task(self, future: Union[ResultFuture, asyncio.Future],
                       method: str, args, kwargs):
         task_id = uuid.uuid4()
         self.tasks[task_id] = future
         try:
-            # TODO ME: observe the Queue content
-            print(f"TODO ME: Enqueue task ({task_id}, {method}, {args}, {kwargs})")
-            self._task_queue.put((task_id, method, args, kwargs))
-        except SystemExit:
-            raise
-        except BaseException as e:
-            del self.tasks[task_id]
-            raise ChildProcessError("worker died") from e
+            self.socket_Task.send_pyobj((task_id, method, args, kwargs))            
+        except Exception as e:
+            logger.error(f"Error sending task to worker {self.rank}: {e}")
+            raise e
 
     def execute_method(self, method: str, *args, **kwargs):
         future: ResultFuture = ResultFuture()
@@ -191,96 +177,56 @@ class ProcessWorkerWrapper:
         return await future
 
     def terminate_worker(self):
-        try:
-            self._task_queue.put(_TERMINATE)
-        except ValueError:
-            self.process.kill()
-        self._task_queue.close()
-
+        self.socket_Task.send_pyobj(_TERMINATE)
+        
     def kill_worker(self):
-        self._task_queue.close()
-        self.process.kill()
+        self.socket_Task.send_pyobj(_TERMINATE)
 
 
-def _run_worker_process(
-    worker_factory: Callable[[], Any],
-    task_queue: Queue,
-    result_queue: Queue,
-) -> None:
-    """Worker process event loop"""
+def mpi_worker_process() -> None:
+    # Queue connecting
+    master_addr = os.environ["MASTER_ADDR"]
+    rank = int(os.environ['RANK'])
+    ZMQ_URL_Task = f"tcp://{master_addr}:{5100 + rank}"
+    ZMQ_URL_Result = f"tcp://{master_addr}:{5200}" # result for all workers
 
-    # Add process-specific prefix to stdout and stderr
-    process_name = get_mp_context().current_process().name
-    pid = os.getpid()
-    _add_prefix(sys.stdout, process_name, pid)
-    _add_prefix(sys.stderr, process_name, pid)
+    socket_pull = zmqContext.socket(zmq.PULL)
+    socket_pull.connect(ZMQ_URL_Task)
+    print(f"Worker {rank} bound to Task Queue {ZMQ_URL_Task}")
+    socket_push = zmqContext.socket(zmq.PUSH)
+    socket_push.connect(ZMQ_URL_Result)
+    print(f"Worker {rank} connect to Result Queue {ZMQ_URL_Result}")
 
-    # Initialize worker
+    # create worker
+    worker_factory: Callable[[], Any] = socket_pull.recv_pyobj()
+    print(f"Worker {rank} received worker factory")
     worker = worker_factory()
     del worker_factory
+    print(f"Worker {rank} created worker")
 
-    # Accept tasks from the engine in task_queue
-    # and return task output in result_queue
-    logger.info("Worker ready; awaiting tasks")
+    # loop execute
+    logger.info(f"Worker {rank} ready; awaiting tasks")
     try:
-        for items in iter(task_queue.get, _TERMINATE):
-            # TODO ME: observe the Queue content
-            print(f"TODO ME: Task queue in worker proc received ({items})")
+        while ((items := socket_pull.recv_pyobj()) != _TERMINATE):
             output = None
             exception = None
+            print(f"Worker {rank} received task {items}")
             task_id, method, args, kwargs = items
             try:
                 executor = getattr(worker, method)
                 output = executor(*args, **kwargs)
-            except SystemExit:
-                raise
-            except KeyboardInterrupt:
-                break
-            except BaseException as e:
-                logger.exception(
-                    "Exception in worker %s while processing method %s.",
-                    process_name, method)
+            except Exception as e:
                 exception = e
-            result_queue.put(
+                logger.exception(f"Worker {rank} task failed: {e}")
+            socket_push.send_pyobj(
                 Result(task_id=task_id, value=output, exception=exception))
+
     except KeyboardInterrupt:
         pass
     except Exception:
-        logger.exception("Worker failed")
+        logger.exception(f"Worker {rank} failed")
 
-    logger.info("Worker exiting")
-
-
-def _add_prefix(file: TextIO, worker_name: str, pid: int) -> None:
-    """Prepend each output line with process-specific prefix"""
-
-    prefix = f"{CYAN}({worker_name} pid={pid}){RESET} "
-    file_write = file.write
-
-    def write_with_prefix(s: str):
-        if not s:
-            return
-        if file.start_new_line:  # type: ignore[attr-defined]
-            file_write(prefix)
-        idx = 0
-        while (next_idx := s.find('\n', idx)) != -1:
-            next_idx += 1
-            file_write(s[idx:next_idx])
-            if next_idx == len(s):
-                file.start_new_line = True  # type: ignore[attr-defined]
-                return
-            file_write(prefix)
-            idx = next_idx
-        file_write(s[idx:])
-        file.start_new_line = False  # type: ignore[attr-defined]
-
-    file.start_new_line = True  # type: ignore[attr-defined]
-    file.write = write_with_prefix  # type: ignore[method-assign]
-
-
-def get_mp_context():
-    mp_method = envs.VLLM_WORKER_MULTIPROC_METHOD
-    return multiprocessing.get_context(mp_method)
+    logger.info(f"Worker {rank} exiting")
 
 
 def set_multiprocessing_worker_envs(parallel_config):

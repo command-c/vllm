@@ -15,6 +15,8 @@ from vllm.outputs import (ClassificationOutput, ClassificationRequestOutput,
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingParams
 
+from vllm.executor.mpi_worker_utils import mpi_worker_process
+
 from .version import __version__, __version_tuple__
 
 __all__ = [
@@ -42,4 +44,5 @@ __all__ = [
     "AsyncEngineArgs",
     "initialize_ray_cluster",
     "PoolingParams",
+    "mpi_worker_process",
 ]

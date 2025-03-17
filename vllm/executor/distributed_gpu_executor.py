@@ -23,6 +23,9 @@ class DistributedGPUExecutor(GPUExecutor):
         # to the _run_workers execute_model call
         self.extra_execute_model_run_workers_kwargs: Dict[str, Any] = {}
 
+        # TODO ME observe
+        print(f"Initial dist gpu executor with {args}, {kwargs}")
+
         super().__init__(*args, **kwargs)
 
     def determine_num_available_blocks(self) -> Tuple[int, int]:

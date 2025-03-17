@@ -679,6 +679,15 @@ class AsyncLLMEngine(EngineClient):
             from vllm.executor.multiproc_gpu_executor import (
                 MultiprocessingGPUExecutorAsync)
             executor_class = MultiprocessingGPUExecutorAsync
+            
+            
+        # TODO ME
+        elif distributed_executor_backend == "mpi":
+            from vllm.executor.mpi_gpu_executor import (
+                MPIGPUExecutorAsync)
+            executor_class = MPIGPUExecutorAsync
+            
+            
         else:
             from vllm.executor.gpu_executor import GPUExecutorAsync
             executor_class = GPUExecutorAsync
