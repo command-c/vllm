@@ -200,7 +200,10 @@ def mpi_worker_process() -> None:
     # create worker
     worker_factory: Callable[[], Any] = socket_pull.recv_pyobj()
     print(f"Worker {rank} received worker factory")
-    worker = worker_factory()
+    
+    local_rank = int(os.environ['MPI_LOCALRANKID'])
+    worker = worker_factory(local_rank=local_rank)
+    
     del worker_factory
     print(f"Worker {rank} created worker")
 

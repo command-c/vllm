@@ -186,19 +186,23 @@ class GroupCoordinator:
         
         for ranks in group_ranks:
             # device_backend = torch_distributed_backend
-            # device_backend = 'nccl'
+            # if len(ranks) == 1:
+            #     device_backend = 'nccl' # TODO, MPI doesn't work for sub group, idk why
+            # else:
             device_backend = 'cpu:mpi,cuda:mpi'
             logger.info(f"__ME using device_group backend: {device_backend}, ranks: {ranks}")
             device_group = torch.distributed.new_group(
                 ranks, backend=device_backend)
+                        
             # ranks, backend=torch_distributed_backend)
             # a group with `gloo` backend, to allow direct coordination between
             # processes through the CPU.
             # TODO changed cpu_group to MPI
-            cpu_backend = 'cpu:mpi,cuda:mpi'
+            # cpu_backend = 'cpu:mpi,cuda:mpi'
             use_custom_allreduce = False
             use_pynccl = False
-            # cpu_backend = 'gloo'
+            cpu_backend = 'gloo'
+            use_message_queue_broadcaster = False
             # cpu_group = torch.distributed.new_group(ranks, backend="gloo")
             # cpu_group = torch.distributed.new_group(ranks, backend=cpu_backend)
             cpu_group = torch.distributed.new_group(
@@ -213,6 +217,18 @@ class GroupCoordinator:
                 self.device_group = device_group
                 self.cpu_group = cpu_group
 
+
+
+        # a short test here
+        group = torch.distributed.new_group([0, 1, 2, 3], backend='cpu:mpi,cuda:mpi')
+        tensor = torch.arange(10)*(self.rank+1)
+        tensor = tensor.cuda(local_rank)
+        print(f"rank: {self.rank}, tensor: {tensor}")
+        print("Calling all_reduce")
+        torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM, group=group)
+        print(f"rank: {self.rank}, tensor: {tensor}")
+        print("__ME passed")
+            
         assert self.cpu_group is not None
         assert self.device_group is not None
 
@@ -403,10 +419,15 @@ class GroupCoordinator:
         #     when we run the model, allreduce only happens for the TP
         #     group, where we always have either custom allreduce or pynccl.
         out = input_.clone()
-        # logger.info(f"__ME Using device: {out.device}")
-        torch.distributed.all_reduce(out, group=self.device_group)
-        # torch.distributed.all_reduce(out)
-        return out
+        # logger.info(f"__ME Using device: {out.device}, rank: {self.rank}, local_rank: {self.local_rank}")
+        print(f"__ME out.shape: {out.shape}, size(MB): {out.numel() * out.element_size() / 1024**2}, device: {out.device}, rank: {self.rank}, local_rank: {self.local_rank}")
+        
+        # TODO BUG
+        if len(torch.distributed.get_process_group_ranks(self.device_group)) == 1:
+            return out
+        else:
+            torch.distributed.all_reduce(out, group=self.device_group)
+            return out
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
         world_size = self.world_size
@@ -989,7 +1010,7 @@ def init_distributed_environment(
 
     backend = 'cpu:mpi,cuda:mpi'
     # backend = 'nccl' #TODO
-
+    torch.distributed.init_process_group(backend='cpu:mpi,cuda:mpi')
     logger.info(
         "__ME world_size=%d rank=%d local_rank=%d "
         "distributed_init_method=%s backend=%s", world_size, rank, local_rank,
@@ -999,14 +1020,16 @@ def init_distributed_environment(
         # assert distributed_init_method is not None, (
         #     "distributed_init_method must be provided when initializing "
         #     "distributed environment")
-        # # this backend is used for WORLD
+        # this backend is used for WORLD
+        # distributed_init_method= "tcp://10.1.1.32:58335"
         # torch.distributed.init_process_group(
         #     backend=backend,
         #     init_method=distributed_init_method,
         #     world_size=world_size,
         #     rank=rank)
-        
-        torch.distributed.init_process_group(backend='cpu:mpi,cuda:mpi')
+        # torch.cuda.set_device(local_rank)
+
+        # torch.distributed.init_process_group(backend='nccl')
         
         logger.info(
             f"__ME Initialized distributed environment, with world_size {torch.distributed.get_world_size()}")

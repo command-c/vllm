@@ -58,9 +58,10 @@ class MPIGPUExecutor(DistributedGPUExecutor):
             self.worker_monitor = None
         else:
             result_handler = ResultHandler()
-            local_size = int(os.environ['LOCAL_SIZE'])
+            # local_size = int(os.environ['LOCAL_SIZE'])
             for rank in range(1, world_size):
                 logger.info(f"Creating worker wrapper {rank}")
+                # local_rank=rank % local_size,
                 worker = ProcessWorkerWrapper(
                     rank,
                     result_handler,
@@ -68,7 +69,6 @@ class MPIGPUExecutor(DistributedGPUExecutor):
                         create_worker,
                         **self._get_worker_kwargs(
                             rank=rank,
-                            local_rank=rank % local_size,
                             distributed_init_method=distributed_init_method,
                         )))
                 logger.info(f"Created worker wrapper {rank}")
@@ -104,13 +104,13 @@ class MPIGPUExecutor(DistributedGPUExecutor):
 
         cuda_device_count = cuda_device_count_stateless()
         # Use confusing message for more common TP-only case.
-        assert tensor_parallel_size <= cuda_device_count, (
-            f"please set tensor_parallel_size ({tensor_parallel_size}) "
-            f"to less than max local gpu count ({cuda_device_count})")
+        # assert tensor_parallel_size <= cuda_device_count, (
+        #     f"please set tensor_parallel_size ({tensor_parallel_size}) "
+        #     f"to less than max local gpu count ({cuda_device_count})")
 
-        assert world_size <= cuda_device_count, (
-            f"please ensure that world_size ({world_size}) "
-            f"is less than than max local gpu count ({cuda_device_count})")
+        # assert world_size <= cuda_device_count, (
+        #     f"please ensure that world_size ({world_size}) "
+        #     f"is less than than max local gpu count ({cuda_device_count})")
 
     def shutdown(self):
         if (worker_monitor := getattr(self, "worker_monitor",
