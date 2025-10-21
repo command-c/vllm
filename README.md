@@ -1,4 +1,5 @@
 Note: This is a custom build of vllm. Add support for cross node mp.
+10/21 before rebase new vllm main branch
 
 ---
 
